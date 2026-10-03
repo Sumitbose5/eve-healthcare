@@ -1,0 +1,67 @@
+# Local stack: API + Celery worker + Celery beat + Redis (+ optional local Postgres).
+#
+# A) Neon (recommended):  set DATABASE_URL in .env, then
+#      docker compose up --build api worker beat redis --no-deps
+# B) Fully local Postgres: leave DATABASE_URL unset, then
+#      docker compose up --build
+x-app: &app
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  environment: &app-env
+    DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/eve}
+    REDIS_URL: redis://redis:6379/0
+    CELERY_BROKER_URL: redis://redis:6379/1
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    <<: *app
+    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=INFO
+
+  beat:
+    <<: *app
+    command: celery -A app.tasks.celery_app.celery_app beat --loglevel=INFO
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: eve
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d eve"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
